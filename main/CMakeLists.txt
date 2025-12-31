@@ -2,6 +2,7 @@
 set(SOURCES "audio/audio_codec.cc"
             "audio/audio_service.cc"
             "audio/codecs/no_audio_codec.cc"
+            "audio/codecs/xiaolu_no_audio_codec.cc"
             "audio/codecs/box_audio_codec.cc"
             "audio/codecs/es8311_audio_codec.cc"
             "audio/codecs/es8374_audio_codec.cc"
@@ -452,6 +453,11 @@ elseif(CONFIG_BOARD_TYPE_XINGZHI_CUBE_1_54TFT_WIFI)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
 elseif(CONFIG_BOARD_TYPE_XINGZHI_CUBE_1_54TFT_ML307)
     set(BOARD_TYPE "xingzhi-cube-1.54tft-ml307")
+    set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
+    set(BUILTIN_ICON_FONT font_awesome_20_4)
+    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
+elseif(CONFIG_BOARD_TYPE_XIAOLU_CUBE_1_54TFT_WIFI)
+    set(BOARD_TYPE "xiaolu-cube-1.54tft-wifi")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
