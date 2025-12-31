@@ -12,6 +12,7 @@
 #include "lvgl_theme.h"
 #include "settings.h"
 #include "mcp_server.h"
+#include "display/lvgl_display/emoji_collection.h"
 
 #include <esp_log.h>
 #include <esp_lcd_panel_vendor.h>
@@ -235,6 +236,20 @@ private:
         yellow_theme->set_icon_font(icon_font);
         yellow_theme->set_large_icon_font(large_icon_font);
 
+        // 创建默认表情集合并设置到所有主题
+        auto default_emoji_collection = std::static_pointer_cast<EmojiCollection>(std::make_shared<Twemoji64>());
+        
+        // 为所有主题设置表情集合
+        light_theme->set_emoji_collection(default_emoji_collection);
+        dark_theme->set_emoji_collection(default_emoji_collection);
+        blue_theme->set_emoji_collection(default_emoji_collection);
+        green_theme->set_emoji_collection(default_emoji_collection);
+        purple_theme->set_emoji_collection(default_emoji_collection);
+        orange_theme->set_emoji_collection(default_emoji_collection);
+        pink_theme->set_emoji_collection(default_emoji_collection);
+        cyan_theme->set_emoji_collection(default_emoji_collection);
+        yellow_theme->set_emoji_collection(default_emoji_collection);
+
         auto& theme_manager = LvglThemeManager::GetInstance();
         theme_manager.RegisterTheme("light", light_theme);
         theme_manager.RegisterTheme("dark", dark_theme);
@@ -330,6 +345,7 @@ private:
         
         ESP_LOGI(TAG, "小路板子MCP工具已注册，支持 %zu 个自定义主题", theme_names_.size());
     }
+
 
     void InitializePowerManager() {
         power_manager_ = new PowerManager(GPIO_NUM_38);
