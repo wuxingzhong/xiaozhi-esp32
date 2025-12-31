@@ -18,6 +18,8 @@
 #include <esp_lcd_panel_vendor.h>
 #include <font_awesome.h>
 #include <variant>
+#include <cmath>
+#include <vector>
 
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
@@ -93,6 +95,427 @@ private:
             SwitchToNextTheme();
             volume_up_pressed_ = false;
             volume_down_pressed_ = false;
+        }
+    }
+
+    // 烟花类型枚举
+    enum FireworkType {
+        FIREWORK_NORMAL,      // 普通圆形爆炸
+        FIREWORK_HEART,       // 心形
+        FIREWORK_RING,        // 环形
+        FIREWORK_FOUNTAIN,    // 喷泉式
+        FIREWORK_WILLOW       // 柳树形（拖尾长）
+    };
+
+    // 烟花粒子结构
+    struct FireworkParticle {
+        lv_obj_t* obj;
+        lv_obj_t* tail_obj;  // 拖尾对象
+        float x, y;
+        float vx, vy;
+        lv_color_t base_color;
+        lv_color_t secondary_color;  // 第二颜色（用于渐变）
+        uint32_t life;
+        uint32_t max_life;
+        float size;  // 粒子大小
+        bool twinkle;  // 是否闪烁
+        uint32_t twinkle_phase;  // 闪烁相位
+        bool has_secondary_explosion;  // 是否有二次爆炸
+        uint32_t explosion_time;  // 爆炸时间点
+        FireworkType type;  // 烟花类型
+    };
+
+    // 烟花容器和粒子
+    std::vector<FireworkParticle> firework_particles_;
+    lv_obj_t* firework_container_ = nullptr;
+    lv_timer_t* firework_timer_ = nullptr;
+
+    // 烟花动画更新函数
+    static void FireworkTimerCallback(lv_timer_t* timer) {
+        auto* self = static_cast<XIAOLU_CUBE_1_54TFT_WIFI*>(lv_timer_get_user_data(timer));
+        self->UpdateFirework();
+    }
+
+    void UpdateFirework() {
+        bool any_alive = false;
+
+        for (auto& particle : firework_particles_) {
+            if (particle.life > 0) {
+                any_alive = true;
+
+                // 保存旧位置用于拖尾
+                float old_x = particle.x;
+                float old_y = particle.y;
+
+                // 更新位置
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.vy += 0.4f; // 重力
+                particle.vx *= 0.98f; // 空气阻力
+                particle.vy *= 0.98f;
+
+                // 更新粒子对象位置
+                lv_obj_set_pos(particle.obj, (int)particle.x, (int)particle.y);
+
+                // 更新拖尾位置（从旧位置到新位置的中点）
+                if (particle.tail_obj) {
+                    float tail_x = (old_x + particle.x) / 2;
+                    float tail_y = (old_y + particle.y) / 2;
+                    lv_obj_set_pos(particle.tail_obj, (int)tail_x, (int)tail_y);
+                }
+
+                // 减少生命值
+                particle.life--;
+
+                // 计算生命比例（0.0 ~ 1.0）
+                float life_ratio = (float)particle.life / particle.max_life;
+
+                // 二次爆炸效果
+                if (particle.has_secondary_explosion && particle.life == particle.explosion_time) {
+                    // 创建小型二次爆炸
+                    CreateMiniExplosion(particle.x, particle.y, particle.base_color, 8);
+                }
+
+                // 颜色渐变效果：从基础色到次要色再到黑色
+                lv_color_t current_color;
+                if (life_ratio > 0.5f) {
+                    // 前半生命：基础色到次要色
+                    uint8_t mix_ratio = (uint8_t)((1.0f - life_ratio) * 2.0f * 255);
+                    current_color = lv_color_mix(
+                        particle.base_color,
+                        particle.secondary_color,
+                        mix_ratio
+                    );
+                } else {
+                    // 后半生命：次要色到黑色
+                    uint8_t brightness = (uint8_t)(life_ratio * 2.0f * 255);
+                    current_color = lv_color_mix(
+                        particle.secondary_color,
+                        lv_color_hex(0x000000),
+                        255 - brightness
+                    );
+                }
+                lv_obj_set_style_bg_color(particle.obj, current_color, 0);
+
+                // 透明度：开始和结束时淡入淡出
+                uint8_t opacity;
+                if (life_ratio > 0.8f) {
+                    // 淡入阶段
+                    opacity = (uint8_t)((1.0f - life_ratio) * 5.0f * 255);
+                } else if (life_ratio < 0.2f) {
+                    // 淡出阶段
+                    opacity = (uint8_t)(life_ratio * 5.0f * 255);
+                } else {
+                    // 完全不透明
+                    opacity = 255;
+                }
+
+                // 闪烁效果
+                if (particle.twinkle) {
+                    particle.twinkle_phase++;
+                    float twinkle = 0.7f + 0.3f * std::sin(particle.twinkle_phase * 0.3f);
+                    opacity = (uint8_t)(opacity * twinkle);
+                }
+
+                lv_obj_set_style_opa(particle.obj, opacity, 0);
+
+                // 拖尾透明度更低
+                if (particle.tail_obj) {
+                    lv_obj_set_style_opa(particle.tail_obj, opacity / 3, 0);
+                    lv_obj_set_style_bg_color(particle.tail_obj, current_color, 0);
+                }
+            }
+        }
+
+        // 如果所有粒子都消失了，停止定时器并清理
+        if (!any_alive) {
+            if (firework_timer_) {
+                lv_timer_pause(firework_timer_);
+            }
+            CleanupFirework();
+        }
+    }
+
+    // 创建小型二次爆炸
+    void CreateMiniExplosion(float x, float y, lv_color_t color, int particle_count) {
+        if (!firework_container_) return;
+
+        // 小屏幕减少二次爆炸粒子数量
+        particle_count = particle_count / 2;
+        if (particle_count < 4) particle_count = 4;
+
+        for (int i = 0; i < particle_count; i++) {
+            FireworkParticle particle;
+
+            particle.size = 2.0f;  // 小粒子
+
+            // 创建粒子对象
+            particle.obj = lv_obj_create(firework_container_);
+            lv_obj_set_size(particle.obj, 2, 2);
+            lv_obj_set_style_radius(particle.obj, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(particle.obj, color, 0);
+            lv_obj_set_style_bg_opa(particle.obj, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(particle.obj, 0, 0);
+
+            // 创建拖尾
+            particle.tail_obj = lv_obj_create(firework_container_);
+            lv_obj_set_size(particle.tail_obj, 1, 1);
+            lv_obj_set_style_radius(particle.tail_obj, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(particle.tail_obj, color, 0);
+            lv_obj_set_style_border_width(particle.tail_obj, 0, 0);
+
+            particle.x = x;
+            particle.y = y;
+
+            // 小范围随机发射
+            float angle = (float)i / particle_count * 2 * 3.14159f;
+            float speed = 1.0f + (rand() % 50) / 100.0f;
+            particle.vx = std::cos(angle) * speed;
+            particle.vy = std::sin(angle) * speed;
+
+            particle.base_color = color;
+            particle.secondary_color = lv_color_mix(color, lv_color_hex(0xFFFFFF), 128);
+            particle.max_life = 20 + rand() % 10;
+            particle.life = particle.max_life;
+            particle.twinkle = false;
+            particle.has_secondary_explosion = false;
+            particle.type = FIREWORK_NORMAL;
+
+            firework_particles_.push_back(particle);
+        }
+    }
+
+    void CleanupFirework() {
+        for (auto& particle : firework_particles_) {
+            if (particle.obj) {
+                lv_obj_del(particle.obj);
+            }
+            if (particle.tail_obj) {
+                lv_obj_del(particle.tail_obj);
+            }
+        }
+        firework_particles_.clear();
+
+        if (firework_container_) {
+            lv_obj_del(firework_container_);
+            firework_container_ = nullptr;
+        }
+
+        if (firework_timer_) {
+            lv_timer_delete(firework_timer_);
+            firework_timer_ = nullptr;
+        }
+    }
+
+    void LaunchFirework(int x, int y, lv_color_t color, int particle_count, FireworkType type = FIREWORK_NORMAL) {
+        // 清理之前的烟花
+        CleanupFirework();
+
+        // 创建烟花容器
+        firework_container_ = lv_obj_create(lv_screen_active());
+        lv_obj_set_size(firework_container_, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        lv_obj_set_pos(firework_container_, 0, 0);
+        lv_obj_set_style_bg_opa(firework_container_, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(firework_container_, 0, 0);
+        lv_obj_set_style_pad_all(firework_container_, 0, 0);
+
+        // 根据类型决定颜色方案
+        lv_color_t secondary_color;
+        if (type == FIREWORK_WILLOW) {
+            // 柳树形：金色到橙色渐变
+            secondary_color = lv_color_hex(0xFF8C00);
+        } else {
+            // 其他：颜色到白色渐变
+            secondary_color = lv_color_mix(color, lv_color_hex(0xFFFFFF), 150);
+        }
+
+        // 创建粒子 - 使用多层次粒子系统
+        firework_particles_.reserve(particle_count);
+        for (int i = 0; i < particle_count; i++) {
+            FireworkParticle particle;
+            particle.type = type;
+
+            // 随机粒子大小（3种尺寸）- 针对240x240小屏幕优化
+            int size_type = rand() % 3;
+            if (size_type == 0) {
+                particle.size = 4.0f;  // 大粒子（小屏幕减小）
+            } else if (size_type == 1) {
+                particle.size = 3.0f;  // 中等粒子
+            } else {
+                particle.size = 2.0f;  // 小粒子
+            }
+
+            // 创建主粒子对象
+            particle.obj = lv_obj_create(firework_container_);
+            lv_obj_set_size(particle.obj, (int)particle.size, (int)particle.size);
+            lv_obj_set_style_radius(particle.obj, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(particle.obj, color, 0);
+            lv_obj_set_style_bg_opa(particle.obj, LV_OPA_COVER, 0);
+            lv_obj_set_style_border_width(particle.obj, 0, 0);
+
+            // 添加发光效果（阴影）- 小屏幕减小阴影
+            lv_obj_set_style_shadow_width(particle.obj, (int)(particle.size * 1.2f), 0);
+            lv_obj_set_style_shadow_color(particle.obj, color, 0);
+            lv_obj_set_style_shadow_opa(particle.obj, LV_OPA_40, 0);
+
+            // 创建拖尾对象
+            particle.tail_obj = lv_obj_create(firework_container_);
+            lv_obj_set_size(particle.tail_obj, (int)(particle.size * 0.7f), (int)(particle.size * 0.7f));
+            lv_obj_set_style_radius(particle.tail_obj, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_color(particle.tail_obj, color, 0);
+            lv_obj_set_style_border_width(particle.tail_obj, 0, 0);
+
+            // 初始位置
+            particle.x = x;
+            particle.y = y;
+
+            // 根据烟花类型设置发射角度和速度
+            float angle, speed;
+
+            switch (type) {
+                case FIREWORK_HEART: {
+                    // 心形图案
+                    float t = (float)i / particle_count * 2 * 3.14159f;
+                    float heart_x = 16 * std::pow(std::sin(t), 3);
+                    float heart_y = -(13 * std::cos(t) - 5 * std::cos(2*t) - 2 * std::cos(3*t) - std::cos(4*t));
+                    angle = std::atan2(heart_y, heart_x);
+                    speed = 1.2f + (rand() % 60) / 100.0f;  // 降低速度
+                    break;
+                }
+                case FIREWORK_RING: {
+                    // 环形 - 只向外，不上下
+                    angle = (float)i / particle_count * 2 * 3.14159f;
+                    speed = 2.0f + (rand() % 50) / 100.0f;  // 降低速度
+                    break;
+                }
+                case FIREWORK_FOUNTAIN: {
+                    // 喷泉式 - 主要向上
+                    angle = -3.14159f / 2 + (rand() % 100 - 50) / 100.0f;
+                    speed = 1.5f + (rand() % 150) / 100.0f;  // 降低速度
+                    break;
+                }
+                case FIREWORK_WILLOW: {
+                    // 柳树形 - 先上后下，拖尾长
+                    angle = (float)i / particle_count * 2 * 3.14159f;
+                    speed = 1.5f + (rand() % 100) / 100.0f;  // 降低速度
+                    break;
+                }
+                default: // FIREWORK_NORMAL
+                    angle = (float)i / particle_count * 2 * 3.14159f;
+                    angle += (rand() % 100 - 50) / 500.0f;
+                    speed = 1.8f + (rand() % 120) / 100.0f;  // 降低速度
+                    speed = speed * (5.0f / particle.size);  // 调整速度比例
+                    break;
+            }
+
+            particle.vx = std::cos(angle) * speed;
+            particle.vy = std::sin(angle) * speed - (type == FIREWORK_RING ? 0.0f : 1.0f);  // 降低初始向上速度
+
+            particle.base_color = color;
+            particle.secondary_color = secondary_color;
+
+            // 生命值根据粒子大小和类型变化 - 小屏幕缩短生命周期
+            if (type == FIREWORK_WILLOW) {
+                particle.max_life = 80 + (int)(particle.size * 12) + rand() % 30; // 柳树形稍长
+            } else {
+                particle.max_life = 60 + (int)(particle.size * 8) + rand() % 25;
+            }
+            particle.life = particle.max_life;
+
+            // 30% 的粒子会闪烁
+            particle.twinkle = (rand() % 100) < 30;
+            particle.twinkle_phase = rand() % 100;
+
+            // 20% 的粒子有二次爆炸
+            particle.has_secondary_explosion = (rand() % 100) < 20 && type == FIREWORK_NORMAL;
+            if (particle.has_secondary_explosion) {
+                particle.explosion_time = particle.max_life / 2 + rand() % (particle.max_life / 4);
+            }
+
+            firework_particles_.push_back(particle);
+        }
+
+        // 创建定时器
+        if (!firework_timer_) {
+            firework_timer_ = lv_timer_create(FireworkTimerCallback, 25, this);
+        } else {
+            lv_timer_resume(firework_timer_);
+        }
+    }
+
+    void PlayFireworkShow(int count, int delay_ms) {
+        auto display = GetDisplay();
+        if (!display) {
+            ESP_LOGW(TAG, "Display not available");
+            return;
+        }
+
+        DisplayLockGuard guard(display);
+
+        // 更丰富的颜色数组 - 包括渐变和金色效果
+        lv_color_t colors[] = {
+            lv_color_hex(0xFF1744), // 鲜红色
+            lv_color_hex(0x00E676), // 翠绿色
+            lv_color_hex(0x2979FF), // 蓝色
+            lv_color_hex(0xFFD600), // 金黄色
+            lv_color_hex(0xE040FB), // 紫色
+            lv_color_hex(0x00E5FF), // 青色
+            lv_color_hex(0xFF6E40), // 橙色
+            lv_color_hex(0xFF4081), // 粉红色
+            lv_color_hex(0xFFFFFF), // 纯白色（璀璨效果）
+            lv_color_hex(0xFFD700), // 金色
+            lv_color_hex(0xFF69B4), // 热粉色
+            lv_color_hex(0x7FFF00), // 春绿色
+        };
+
+        // 烟花类型数组
+        FireworkType types[] = {
+            FIREWORK_NORMAL,
+            FIREWORK_NORMAL,    // 普通类型权重更高
+            FIREWORK_NORMAL,
+            FIREWORK_HEART,
+            FIREWORK_RING,
+            FIREWORK_FOUNTAIN,
+            FIREWORK_WILLOW
+        };
+
+        for (int i = 0; i < count; i++) {
+            // 随机位置 - 根据类型调整，针对240x240屏幕
+            FireworkType type = types[rand() % (sizeof(types) / sizeof(types[0]))];
+
+            int x, y;
+            if (type == FIREWORK_FOUNTAIN) {
+                // 喷泉式在底部中央
+                x = DISPLAY_WIDTH / 2;
+                y = DISPLAY_HEIGHT - 20;  // 距离底部20px
+            } else {
+                // 其他类型在屏幕中上部分 - 留出更多空间
+                x = 30 + rand() % (DISPLAY_WIDTH - 60);  // 左右各留30px边距
+                y = 25 + rand() % (DISPLAY_HEIGHT / 3);  // 在上1/3区域
+            }
+
+            // 随机颜色
+            lv_color_t color = colors[rand() % (sizeof(colors) / sizeof(colors[0]))];
+
+            // 粒子数量根据类型调整 - 小屏幕减少粒子数量
+            int particle_count;
+            if (type == FIREWORK_HEART) {
+                particle_count = 30 + rand() % 10; // 心形需要更多粒子
+            } else if (type == FIREWORK_WILLOW) {
+                particle_count = 35 + rand() % 15; // 柳树形更密集
+            } else if (type == FIREWORK_FOUNTAIN) {
+                particle_count = 20 + rand() % 15; // 喷泉适中
+            } else {
+                particle_count = 25 + rand() % 20; // 25-45个粒子
+            }
+
+            // 发射烟花
+            LaunchFirework(x, y, color, particle_count, type);
+
+            // 延迟
+            if (i < count - 1) {
+                vTaskDelay(pdMS_TO_TICKS(delay_ms));
+            }
         }
     }
 
@@ -342,8 +765,38 @@ private:
                 cJSON_AddItemToObject(json, "themes", themes_array);
                 return json;
             });
-        
-        ESP_LOGI(TAG, "小路板子MCP工具已注册，支持 %zu 个自定义主题", theme_names_.size());
+
+        // 注册烟花效果工具
+        mcp_server.AddTool("self.screen.play_firework",
+            "在小路设备的屏幕上播放烟花动画效果。可以指定烟花数量和间隔时间。",
+            PropertyList({
+                Property("count", kPropertyTypeInteger, 5),
+                Property("delay_ms", kPropertyTypeInteger, 800)
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                int count = properties["count"].value<int>();
+                int delay_ms = properties["delay_ms"].value<int>();
+
+                // 限制范围
+                if (count < 1) count = 1;
+                if (count > 10) count = 10;
+                if (delay_ms < 100) delay_ms = 100;
+                if (delay_ms > 3000) delay_ms = 3000;
+
+                ESP_LOGI(TAG, "播放烟花效果: count=%d, delay=%d", count, delay_ms);
+
+                // 直接调用烟花效果
+                PlayFireworkShow(count, delay_ms);
+
+                cJSON* json = cJSON_CreateObject();
+                cJSON_AddStringToObject(json, "status", "success");
+                cJSON_AddStringToObject(json, "message", "烟花效果已播放");
+                cJSON_AddNumberToObject(json, "count", count);
+                cJSON_AddNumberToObject(json, "delay_ms", delay_ms);
+                return json;
+            });
+
+        ESP_LOGI(TAG, "小路板子MCP工具已注册，支持 %zu 个自定义主题和烟花效果", theme_names_.size());
     }
 
 
